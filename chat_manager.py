@@ -2,9 +2,14 @@ import google.generativeai as genai
 import pinecone
 from typing import List, Dict, Optional, TypedDict
 import os
-from dotenv import load_dotenv
 from dataclasses import dataclass
 from datetime import datetime
+from config import (
+    get_pinecone_api_key,
+    get_pinecone_environment,
+    get_pinecone_index_name,
+    get_gemini_api_key
+)
 
 @dataclass
 class ChatResponse:
@@ -17,21 +22,18 @@ class ChatResponse:
 
 class ChatManager:
     def __init__(self):
-        # Load environment variables
-        load_dotenv()
-        
         # Initialize Pinecone
         pinecone.init(
-            api_key=os.getenv('PINECONE_API_KEY'),
-            environment=os.getenv('PINECONE_ENVIRONMENT')
+            api_key=get_pinecone_api_key(),
+            environment=get_pinecone_environment()
         )
         
         # Initialize Gemini
-        genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+        genai.configure(api_key=get_gemini_api_key())
         self.model = genai.GenerativeModel('gemini-pro')
         
         # Get or create Pinecone index
-        self.index_name = "chatbot-embeddings"
+        self.index_name = get_pinecone_index_name()
         if self.index_name not in pinecone.list_indexes():
             pinecone.create_index(
                 name=self.index_name,
