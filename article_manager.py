@@ -2,11 +2,32 @@ import requests
 from bs4 import BeautifulSoup
 import csv
 import os
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Optional, Any
 from datetime import datetime
+import pandas as pd
+import logging
+from pathlib import Path
+from embed_manager import EmbedManager
+from pinecone_manager import PineconeManager
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 class ArticleManager:
-    def __init__(self):
+    def __init__(self, embed_manager: EmbedManager, pinecone_manager: PineconeManager):
+        """
+        Initialize the ArticleManager with required dependencies.
+        
+        Args:
+            embed_manager: Instance of EmbedManager for generating embeddings
+            pinecone_manager: Instance of PineconeManager for storing embeddings
+        """
+        self.embed_manager = embed_manager
+        self.pinecone_manager = pinecone_manager
         self.articles = []
 
     def scrape_webpage(self, url: str) -> Dict[str, str]:
@@ -104,3 +125,124 @@ class ArticleManager:
         Returns the list of articles
         """
         return self.articles
+
+    def process_csv_file(self, file_path: str) -> None:
+        """
+        Process a CSV file, generate embeddings for all text content, and store them in Pinecone.
+        
+        Args:
+            file_path: Path to the CSV file
+        """
+        try:
+            # Read CSV file
+            logger.info(f"Reading CSV file: {file_path}")
+            df = pd.read_csv(file_path)
+            
+            if df.empty:
+                logger.warning(f"CSV file is empty: {file_path}")
+                return
+                
+            # Get all columns
+            columns = df.columns.tolist()
+            logger.info(f"Found {len(columns)} columns: {', '.join(columns)}")
+            
+            # Process each row
+            for index, row in df.iterrows():
+                try:
+                    # Combine all text content from all columns
+                    text_content = " ".join(str(row[col]) for col in columns if pd.notna(row[col]))
+                    
+                    if not text_content.strip():
+                        logger.warning(f"Row {index} contains no text content")
+                        continue
+                    
+                    # Generate embedding
+                    embedding = self.embed_manager.generate_embedding(text_content)
+                    
+                    # Store in Pinecone
+                    self.pinecone_manager.upsert_embedding(
+                        vector=embedding,
+                        metadata={
+                            "text": text_content,
+                            "source_file": Path(file_path).name,
+                            "row_index": index,
+                            **{col: str(row[col]) for col in columns if pd.notna(row[col])}
+                        }
+                    )
+                    
+                    logger.info(f"Successfully processed row {index} from {file_path}")
+                    
+                except Exception as e:
+                    logger.error(f"Error processing row {index}: {str(e)}")
+                    continue
+                    
+        except pd.errors.EmptyDataError:
+            logger.error(f"CSV file is empty: {file_path}")
+        except pd.errors.ParserError as e:
+            logger.error(f"Error parsing CSV file {file_path}: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error processing CSV file {file_path}: {str(e)}")
+            raise
+
+    def process_csv_files(self, data_dir: str = "data") -> None:
+        """
+        Process all CSV files in the specified directory.
+        
+        Args:
+            data_dir: Path to the directory containing CSV files
+        """
+        try:
+            directory = Path(data_dir)
+            
+            if not directory.exists():
+                logger.error(f"Directory not found: {data_dir}")
+                return
+                
+            csv_files = list(directory.glob("*.csv"))
+            
+            if not csv_files:
+                logger.warning(f"No CSV files found in directory: {data_dir}")
+                return
+                
+            logger.info(f"Found {len(csv_files)} CSV files to process")
+            
+            for csv_file in csv_files:
+                logger.info(f"Processing file: {csv_file}")
+                self.process_csv_file(str(csv_file))
+                
+        except Exception as e:
+            logger.error(f"Error processing directory {data_dir}: {str(e)}")
+            raise
+
+    def get_article_count(self) -> int:
+        """
+        Get the total number of articles stored in Pinecone.
+        
+        Returns:
+            int: Number of articles
+        """
+        return self.pinecone_manager.get_vector_count()
+
+    def search_articles(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Search for articles using a text query.
+        
+        Args:
+            query: Search query text
+            top_k: Number of results to return
+            
+        Returns:
+            List of dictionaries containing search results
+        """
+        query_embedding = self.embed_manager.generate_embedding(query)
+        results = self.pinecone_manager.query_vectors(query_embedding, top_k)
+        return results
+
+if __name__ == "__main__":
+    # Initialize managers
+    embed_manager = EmbedManager()
+    pinecone_manager = PineconeManager()
+    article_manager = ArticleManager(embed_manager, pinecone_manager)
+    
+    # Process all CSV files in the data directory
+    article_manager.process_csv_files()
